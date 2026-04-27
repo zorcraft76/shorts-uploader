@@ -1,0 +1,57 @@
+name: 📲 Shorts → Instagram + TikTok (Daily)
+
+on:
+  schedule:
+    # Ogni giorno alle 10:00 ora italiana (estate = UTC+2 → 08:00 UTC)
+    - cron: "0 8 * * *"
+
+  # Avvio manuale dalla UI di GitHub
+  workflow_dispatch:
+
+jobs:
+  upload:
+    name: Carica short del giorno
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write   # necessario per fare commit del file di stato
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 📦 Installa dipendenze Python
+        run: |
+          pip install \
+            google-api-python-client \
+            google-auth \
+            requests
+
+      - name: 🎬 Installa yt-dlp
+        run: |
+          pip install yt-dlp
+
+      - name: 🚀 Esegui uploader
+        env:
+          YOUTUBE_CHANNEL_URL:        ${{ secrets.YOUTUBE_CHANNEL_URL }}
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+          IG_USER_ID:                 ${{ secrets.IG_USER_ID }}
+          IG_ACCESS_TOKEN:            ${{ secrets.IG_ACCESS_TOKEN }}
+          TIKTOK_ACCESS_TOKEN:        ${{ secrets.TIKTOK_ACCESS_TOKEN }}
+          GMAIL_APP_PASSWORD:         ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: |
+          python uploader.py
+
+      - name: 💾 Salva stato nel repository
+        if: always()
+        run: |
+          git config user.name  "Shorts Bot 🤖"
+          git config user.email "giuppyc@gmail.com"
+          git add upload_state.json
+          git diff --staged --quiet || git commit -m "📲 Short caricato - $(date +'%Y-%m-%d')"
+          git push
