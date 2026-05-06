@@ -245,7 +245,7 @@ def upload_to_instagram(video_path: str, caption: str) -> bool:
         upload_resp = requests.post(
             upload_url,
             headers={
-                "Authorization": f"OAuth  {IG_ACCESS_TOKEN}",
+                "Authorization": f"OAuth {IG_ACCESS_TOKEN}",
                 "offset":        "0",
                 "file_size":     str(file_size),
                 "Content-Type":  "application/octet-stream",
