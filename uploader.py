@@ -242,7 +242,7 @@ def upload_to_instagram(video_path: str, caption: str) -> bool:
     # Step 2: carica il file
     print("   Upload file...")
     with open(video_path, "rb") as vf:
-        upload_resp = requests.post(
+        upload_resp = requests.put(
             upload_url,
             headers={
                 "Authorization": f"OAuth {IG_ACCESS_TOKEN}",
