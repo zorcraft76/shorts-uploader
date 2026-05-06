@@ -208,13 +208,13 @@ def build_caption(metadata: dict, short_number: int) -> str:
 # ─────────────────────────────────────────────────────────────
 
 def upload_to_instagram(video_path: str, caption: str) -> bool:
-    """Carica un Reel su Instagram tramite Graph API con upload resumable."""
+    """Carica un Reel su Instagram tramite Graph API - metodo container + upload diretto."""
     base_url = f"https://graph.facebook.com/v19.0/{IG_USER_ID}"
     file_size = Path(video_path).stat().st_size
 
     print("📸 Instagram: creazione container...")
 
-    # Step 1: inizializza upload resumable
+    # Step 1: crea container
     init_resp = requests.post(
         f"{base_url}/media",
         data={
@@ -226,13 +226,18 @@ def upload_to_instagram(video_path: str, caption: str) -> bool:
         }
     )
     init_data = init_resp.json()
+    print(f"   Container response: {init_data}")
 
     if "error" in init_data:
         print(f"   ❌ Errore: {init_data['error']['message']}")
         return False
 
-    container_id = init_data["id"]
-    upload_url   = init_data["uri"]
+    container_id = init_data.get("id")
+    upload_url   = init_data.get("uri")
+
+    if not upload_url:
+        print(f"   ❌ Nessun upload URL ricevuto")
+        return False
 
     # Step 2: carica il file
     print("   Upload file...")
@@ -240,13 +245,14 @@ def upload_to_instagram(video_path: str, caption: str) -> bool:
         upload_resp = requests.post(
             upload_url,
             headers={
-                "Authorization": f"OAuth {IG_ACCESS_TOKEN}",
+                "Authorization": f"Bearer {IG_ACCESS_TOKEN}",
                 "offset":        "0",
                 "file_size":     str(file_size),
                 "Content-Type":  "application/octet-stream",
             },
             data=vf
         )
+    print(f"   Upload status: {upload_resp.status_code} {upload_resp.text[:200]}")
 
     if upload_resp.status_code not in (200, 201):
         print(f"   ❌ Errore upload: {upload_resp.text}")
@@ -259,13 +265,15 @@ def upload_to_instagram(video_path: str, caption: str) -> bool:
         print(".", end="", flush=True)
         status_resp = requests.get(
             f"https://graph.facebook.com/v19.0/{container_id}",
-            params={"fields": "status_code", "access_token": IG_ACCESS_TOKEN}
+            params={"fields": "status_code,status", "access_token": IG_ACCESS_TOKEN}
         )
-        status = status_resp.json().get("status_code", "")
+        status_data = status_resp.json()
+        status = status_data.get("status_code", "")
+        print(f" [{status}]", end="", flush=True)
         if status == "FINISHED":
             break
         if status == "ERROR":
-            print(f"\n   ❌ Errore elaborazione")
+            print(f"\n   ❌ Errore elaborazione: {status_data}")
             return False
     print()
 
@@ -275,6 +283,7 @@ def upload_to_instagram(video_path: str, caption: str) -> bool:
         data={"creation_id": container_id, "access_token": IG_ACCESS_TOKEN}
     )
     pub_data = pub_resp.json()
+    print(f"   Publish response: {pub_data}")
 
     if "error" in pub_data:
         print(f"   ❌ Errore pubblicazione: {pub_data['error']['message']}")
