@@ -5,6 +5,7 @@ on:
     # Ogni giorno alle 10:00 ora italiana (estate = UTC+2 → 08:00 UTC)
     - cron: "0 8 * * *"
 
+  # commento vuoto per fare modifica finta
   # Avvio manuale dalla UI di GitHub
   workflow_dispatch:
 
