@@ -1,5 +1,5 @@
 {
-  "last_uploaded_number": 859,
+  "last_uploaded_number": 860,
   "uploaded": [
     {
       "number": 857,
@@ -15,6 +15,11 @@
       "number": 859,
       "file": "shorts 859.mp4",
       "uploaded_at": "2026-05-07T15:57:08.982216"
+    },
+    {
+      "number": 860,
+      "file": "shorts 860.mp4",
+      "uploaded_at": "2026-05-08T09:05:11.724983"
     }
   ]
 }
