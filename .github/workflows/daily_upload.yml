@@ -31,7 +31,8 @@ jobs:
           pip install \
             google-api-python-client \
             google-auth \
-            requests
+            requests \
+            PyNaCl
 
       - name: 🎬 Installa yt-dlp
         run: |
