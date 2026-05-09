@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
 YouTube Shorts → Instagram Reels Auto Uploader
-Usa URL pubblico Google Drive per l'upload su Instagram.
+- Scarica video da Google Drive
+- Recupera metadati da YouTube con yt-dlp
+- Carica su Instagram Reels
+- Rinnova automaticamente il token Instagram
+- Notifica Gmail quando rimangono pochi video
+- Parte dal numero 857
 """
 
 import os
@@ -19,6 +24,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
 import io
+import base64
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURAZIONE
@@ -33,6 +39,8 @@ IG_ACCESS_TOKEN     = os.environ["IG_ACCESS_TOKEN"]
 GMAIL_SENDER        = "giuppyc@gmail.com"
 GMAIL_RECEIVER      = "giuppyc@gmail.com"
 GMAIL_APP_PASSWORD  = os.environ["GMAIL_APP_PASSWORD"]
+GH_PAT              = os.environ["GH_PAT"]
+GH_REPO             = "zorcraft76/shorts-uploader"
 NOTIFY_THRESHOLD    = 3
 STATE_FILE          = "upload_state.json"
 
@@ -49,6 +57,76 @@ def load_state() -> dict:
 def save_state(state: dict):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
+
+# ─────────────────────────────────────────────────────────────
+# TOKEN INSTAGRAM — rinnovo automatico
+# ─────────────────────────────────────────────────────────────
+
+def refresh_instagram_token(current_token: str) -> str:
+    """Rinnova il token Instagram e aggiorna il Secret su GitHub."""
+    print("🔄 Rinnovo token Instagram...")
+
+    resp = requests.get(
+        "https://graph.facebook.com/v19.0/oauth/access_token",
+        params={
+            "grant_type":        "fb_exchange_token",
+            "client_id":         "964846999240039",
+            "client_secret":     os.environ.get("IG_APP_SECRET", ""),
+            "fb_exchange_token": current_token,
+        }
+    )
+    data = resp.json()
+
+    if "access_token" in data:
+        new_token = data["access_token"]
+        print(f"   Nuovo token ottenuto ✓")
+        update_github_secret("IG_ACCESS_TOKEN", new_token)
+        return new_token
+    else:
+        print(f"   ⚠️ Rinnovo fallito: {data} — uso token attuale")
+        return current_token
+
+
+def update_github_secret(secret_name: str, secret_value: str):
+    """Aggiorna un Secret su GitHub tramite API."""
+    headers = {
+        "Authorization": f"Bearer {GH_PAT}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    # Ottieni la public key del repository
+    key_resp = requests.get(
+        f"https://api.github.com/repos/{GH_REPO}/actions/secrets/public-key",
+        headers=headers
+    )
+    key_data = key_resp.json()
+    public_key = key_data["key"]
+    key_id     = key_data["key_id"]
+
+    # Cifra il secret con la public key
+    from base64 import b64encode
+    from nacl import encoding, public
+
+    pk = public.PublicKey(public_key.encode("utf-8"), encoding.Base64Encoder())
+    sealed_box = public.SealedBox(pk)
+    encrypted = sealed_box.encrypt(secret_value.encode("utf-8"))
+    encrypted_b64 = b64encode(encrypted).decode("utf-8")
+
+    # Aggiorna il secret
+    update_resp = requests.put(
+        f"https://api.github.com/repos/{GH_REPO}/actions/secrets/{secret_name}",
+        headers=headers,
+        json={
+            "encrypted_value": encrypted_b64,
+            "key_id":          key_id,
+        }
+    )
+
+    if update_resp.status_code in (201, 204):
+        print(f"   Secret {secret_name} aggiornato su GitHub ✓")
+    else:
+        print(f"   ⚠️ Errore aggiornamento secret: {update_resp.text}")
 
 # ─────────────────────────────────────────────────────────────
 # GOOGLE DRIVE
@@ -78,19 +156,15 @@ def list_drive_videos(service) -> list[dict]:
     return files_result.get("files", [])
 
 def make_file_public(service, file_id: str) -> str:
-    """Rende il file pubblico e restituisce l'URL diretto."""
-    # Aggiungi permesso pubblico
     service.permissions().create(
         fileId=file_id,
         body={"type": "anyone", "role": "reader"},
     ).execute()
-    # URL diretto per il download
     url = f"https://drive.google.com/uc?export=download&id={file_id}&confirm=t"
     print(f"   URL pubblico creato ✓")
     return url
 
 def revoke_public_access(service, file_id: str):
-    """Rimuove il permesso pubblico dopo l'upload."""
     try:
         permissions = service.permissions().list(fileId=file_id).execute()
         for perm in permissions.get("permissions", []):
@@ -145,15 +219,14 @@ def build_caption(metadata: dict, short_number: int) -> str:
     return caption[:2200]
 
 # ─────────────────────────────────────────────────────────────
-# INSTAGRAM UPLOAD — metodo URL pubblico
+# INSTAGRAM UPLOAD
 # ─────────────────────────────────────────────────────────────
 
-def upload_to_instagram(video_url: str, caption: str) -> bool:
+def upload_to_instagram(video_url: str, caption: str, token: str) -> bool:
     base_url = f"https://graph.facebook.com/v19.0/{IG_USER_ID}"
 
-    print("📸 Instagram: creazione container con URL video...")
+    print("📸 Instagram: creazione container...")
 
-    # Step 1: crea container passando l'URL del video
     init_resp = requests.post(
         f"{base_url}/media",
         data={
@@ -161,7 +234,7 @@ def upload_to_instagram(video_url: str, caption: str) -> bool:
             "video_url":     video_url,
             "caption":       caption,
             "share_to_feed": "true",
-            "access_token":  IG_ACCESS_TOKEN,
+            "access_token":  token,
         }
     )
     init_data = init_resp.json()
@@ -174,14 +247,13 @@ def upload_to_instagram(video_url: str, caption: str) -> bool:
     container_id = init_data.get("id")
     print(f"   Container ID: {container_id}")
 
-    # Step 2: polling — aspetta che Instagram scarichi e processi il video
     print("   Attendo elaborazione", end="", flush=True)
     for _ in range(30):
         time.sleep(15)
         print(".", end="", flush=True)
         status_resp = requests.get(
             f"https://graph.facebook.com/v19.0/{container_id}",
-            params={"fields": "status_code,status", "access_token": IG_ACCESS_TOKEN}
+            params={"fields": "status_code,status", "access_token": token}
         )
         status_data = status_resp.json()
         status = status_data.get("status_code", "")
@@ -189,17 +261,15 @@ def upload_to_instagram(video_url: str, caption: str) -> bool:
             print(f" ✓")
             break
         if status == "ERROR":
-            print(f"\n   ❌ Errore elaborazione: {status_data}")
+            print(f"\n   ❌ Errore: {status_data}")
             return False
     else:
-        print(f"\n   ❌ Timeout elaborazione")
+        print(f"\n   ❌ Timeout")
         return False
 
-    # Step 3: pubblica
-    print("   Pubblicazione...")
     pub_resp = requests.post(
         f"{base_url}/media_publish",
-        data={"creation_id": container_id, "access_token": IG_ACCESS_TOKEN}
+        data={"creation_id": container_id, "access_token": token}
     )
     pub_data = pub_resp.json()
     print(f"   Publish response: {pub_data}")
@@ -246,6 +316,9 @@ def main():
     next_number = state["last_uploaded_number"] + 1
     print(f"🔢 Prossimo short: #{next_number}")
 
+    # Rinnova token Instagram
+    token = refresh_instagram_token(IG_ACCESS_TOKEN)
+
     drive_service = get_drive_service()
     all_videos = list_drive_videos(drive_service)
 
@@ -269,14 +342,11 @@ def main():
     caption  = build_caption(metadata, next_number)
     print(f"\n📝 Caption: {caption[:100]}...\n")
 
-    # Rendi il file pubblico temporaneamente
     print("🔓 Rendo il file pubblico...")
     video_url = make_file_public(drive_service, target_file["id"])
-    print(f"   URL: {video_url[:60]}...")
 
-    ig_ok = upload_to_instagram(video_url, caption)
+    ig_ok = upload_to_instagram(video_url, caption, token)
 
-    # Rimuovi il permesso pubblico
     print("🔒 Rimuovo accesso pubblico...")
     revoke_public_access(drive_service, target_file["id"])
 
