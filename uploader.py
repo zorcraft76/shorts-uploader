@@ -155,7 +155,7 @@ def list_drive_videos(service) -> list[dict]:
     ).execute()
     return files_result.get("files", [])
 
-ddef make_file_public(service, file_id: str) -> str:
+def make_file_public(service, file_id: str) -> str:
     """Rende il file pubblico e restituisce un URL accessibile via proxy."""
     service.permissions().create(
         fileId=file_id,
