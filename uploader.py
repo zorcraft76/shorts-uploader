@@ -155,14 +155,25 @@ def list_drive_videos(service) -> list[dict]:
     ).execute()
     return files_result.get("files", [])
 
-def make_file_public(service, file_id: str) -> str:
+ddef make_file_public(service, file_id: str) -> str:
+    """Rende il file pubblico e restituisce un URL accessibile via proxy."""
     service.permissions().create(
         fileId=file_id,
         body={"type": "anyone", "role": "reader"},
     ).execute()
-    url = f"https://drive.google.com/uc?export=download&id={file_id}&confirm=t"
-    print(f"   URL pubblico creato ✓")
-    return url
+    
+    # URL diretto di Google Drive
+    direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    
+    # Usa un proxy gratuito per rendere l'URL accessibile a Instagram
+    # Opzione 1: cors-anywhere (pubblico, a volte lento)
+    proxy_url = f"https://cors-anywhere.herokuapp.com/{direct_url}"
+    
+    # Opzione 2: usa un servizio di conversione (alternativa)
+    # proxy_url = f"https://api.allorigins.win/raw?url={direct_url}"
+    
+    print(f"   URL pubblico (via proxy): {proxy_url[:80]}...")
+    return proxy_url
 
 def revoke_public_access(service, file_id: str):
     try:
