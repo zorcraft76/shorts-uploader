@@ -3,7 +3,7 @@
 YouTube Shorts → Instagram Reels Auto Uploader
 - Scarica video da Google Drive
 - Recupera metadati da YouTube con yt-dlp
-- Carica su Instagram Reels
+- Carica su Instagram Reels (via tmpfiles.org)
 - Rinnova automaticamente il token Instagram
 - Notifica Gmail quando rimangono pochi video
 - Parte dal numero 857
@@ -14,7 +14,6 @@ import json
 import time
 import subprocess
 import smtplib
-import tempfile
 import requests
 from pathlib import Path
 from datetime import datetime
@@ -24,7 +23,6 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
 import io
-import base64
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURAZIONE
@@ -155,40 +153,6 @@ def list_drive_videos(service) -> list[dict]:
     ).execute()
     return files_result.get("files", [])
 
-def make_file_public(service, file_id: str) -> str:
-    """Rende il file pubblico e restituisce un URL accessibile via proxy."""
-    service.permissions().create(
-        fileId=file_id,
-        body={"type": "anyone", "role": "reader"},
-    ).execute()
-    
-    # URL diretto di Google Drive
-    direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-    
-    # Usa un proxy gratuito per rendere l'URL accessibile a Instagram
-    # Opzione 1: cors-anywhere (pubblico, a volte lento)
-    proxy_url = f"https://cors-anywhere.herokuapp.com/{direct_url}"
-    
-    # Opzione 2: usa un servizio di conversione (alternativa)
-    # proxy_url = f"https://api.allorigins.win/raw?url={direct_url}"
-    
-    print(f"   URL pubblico (via proxy): {proxy_url[:80]}...")
-    return proxy_url
-
-def revoke_public_access(service, file_id: str):
-    try:
-        permissions = service.permissions().list(fileId=file_id).execute()
-        for perm in permissions.get("permissions", []):
-            if perm.get("type") == "anyone":
-                service.permissions().delete(fileId=file_id, permissionId=perm["id"]).execute()
-        print("   Permesso pubblico rimosso ✓")
-    except Exception as e:
-        print(f"   ⚠️ Errore rimozione permesso: {e}")
-
-# ─────────────────────────────────────────────────────────────
-# DOWNLOAD VIDEO DA DRIVE
-# ─────────────────────────────────────────────────────────────
-
 def download_video_from_drive(service, file_id: str) -> bytes:
     """Scarica il video da Google Drive e restituisce i bytes."""
     print("   📥 Download video da Drive...")
@@ -213,6 +177,28 @@ def extract_number_from_filename(filename: str) -> int | None:
         if part.isdigit():
             return int(part)
     return None
+
+# ─────────────────────────────────────────────────────────────
+# UPLOAD SU TMPFILES.ORG (per ottenere URL pubblico)
+# ─────────────────────────────────────────────────────────────
+
+def upload_to_tmpfiles(video_bytes: bytes, filename: str) -> str:
+    """Carica il video su tmpfiles.org e restituisce URL pubblico."""
+    print("   📤 Upload su tmpfiles.org...")
+    
+    resp = requests.post(
+        "https://tmpfiles.org/api/v1/upload",
+        files={"file": (filename, video_bytes, "video/mp4")}
+    )
+    
+    if resp.status_code != 200:
+        raise Exception(f"tmpfiles.org errore: {resp.text}")
+    
+    # L'URL diretto per il download è quello con /dl/
+    file_url = resp.json()["data"]["url"]
+    direct_url = file_url.replace("/api/v1/", "/dl/")
+    print(f"   ✅ URL pubblico ottenuto: {direct_url[:80]}...")
+    return direct_url
 
 # ─────────────────────────────────────────────────────────────
 # YOUTUBE
@@ -251,32 +237,28 @@ def build_caption(metadata: dict, short_number: int) -> str:
     return caption[:2200]
 
 # ─────────────────────────────────────────────────────────────
-# INSTAGRAM UPLOAD - Versione con upload diretto
+# INSTAGRAM UPLOAD - Versione con URL pubblico
 # ─────────────────────────────────────────────────────────────
 
-def upload_to_instagram_direct(video_data: bytes, caption: str, token: str) -> bool:
+def upload_to_instagram(video_url: str, caption: str, token: str) -> bool:
     """
-    Carica video direttamente su Instagram (senza URL pubblico).
-    video_data: bytes del video da caricare
+    Carica video su Instagram usando un URL pubblico.
     """
     base_url = f"https://graph.facebook.com/v19.0/{IG_USER_ID}"
 
-    print("📸 Instagram: creazione container con upload diretto...")
+    print("📸 Instagram: creazione container con URL...")
+    print(f"   URL video: {video_url[:80]}...")
 
-    # Step 1: Crea container con file upload
     init_resp = requests.post(
         f"{base_url}/media",
         data={
-            "media_type": "REELS",
-            "caption": caption,
+            "media_type":    "REELS",
+            "video_url":     video_url,
+            "caption":       caption,
             "share_to_feed": "true",
-            "access_token": token,
-        },
-        files={
-            "video": ("video.mp4", video_data, "video/mp4")
+            "access_token":  token,
         }
     )
-    
     init_data = init_resp.json()
     print(f"   Container response: {init_data}")
 
@@ -287,7 +269,6 @@ def upload_to_instagram_direct(video_data: bytes, caption: str, token: str) -> b
     container_id = init_data.get("id")
     print(f"   Container ID: {container_id}")
 
-    # Step 2: Polling per elaborazione
     print("   Attendo elaborazione", end="", flush=True)
     for _ in range(45):
         time.sleep(15)
@@ -298,7 +279,6 @@ def upload_to_instagram_direct(video_data: bytes, caption: str, token: str) -> b
         )
         status_data = status_resp.json()
         status = status_data.get("status_code", "")
-        
         if status == "FINISHED":
             print(f" ✓")
             break
@@ -309,8 +289,6 @@ def upload_to_instagram_direct(video_data: bytes, caption: str, token: str) -> b
         print(f"\n   ❌ Timeout dopo 11 minuti")
         return False
 
-    # Step 3: Pubblica
-    print("   Pubblicazione...")
     pub_resp = requests.post(
         f"{base_url}/media_publish",
         data={"creation_id": container_id, "access_token": token}
@@ -386,11 +364,14 @@ def main():
     caption  = build_caption(metadata, next_number)
     print(f"\n📝 Caption: {caption[:100]}...\n")
 
-        # Scarica il video da Drive
+    # Scarica il video da Drive
     video_data = download_video_from_drive(drive_service, target_file["id"])
 
-    # Carica direttamente su Instagram (senza URL pubblico)
-    ig_ok = upload_to_instagram_direct(video_data, caption, token)
+    # Carica su tmpfiles.org per ottenere URL pubblico
+    video_url = upload_to_tmpfiles(video_data, target_file["name"])
+
+    # Upload su Instagram usando l'URL
+    ig_ok = upload_to_instagram(video_url, caption, token)
 
     if ig_ok:
         state["last_uploaded_number"] = next_number
