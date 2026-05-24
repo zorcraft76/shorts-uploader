@@ -3,7 +3,7 @@
 YouTube Shorts → Instagram Reels Auto Uploader
 - Scarica video da Google Drive
 - Recupera metadati da YouTube con yt-dlp
-- Carica su Instagram Reels (via tmpfiles.org)
+- Carica su Instagram Reels (via GitHub Releases)
 - Rinnova automaticamente il token Instagram
 - Notifica Gmail quando rimangono pochi video
 - Parte dal numero 857
@@ -179,26 +179,66 @@ def extract_number_from_filename(filename: str) -> int | None:
     return None
 
 # ─────────────────────────────────────────────────────────────
-# UPLOAD SU TMPFILES.ORG (per ottenere URL pubblico)
+# UPLOAD SU GITHUB RELEASES (URL pubblico persistente)
 # ─────────────────────────────────────────────────────────────
 
-def upload_to_tmpfiles(video_bytes: bytes, filename: str) -> str:
-    """Carica il video su tmpfiles.org e restituisce URL pubblico."""
-    print("   📤 Upload su tmpfiles.org...")
+def upload_to_github_release(video_bytes: bytes, filename: str) -> str:
+    """Carica il video su GitHub Release e restituisce URL pubblico persistente."""
+    print("   📤 Upload su GitHub Release...")
     
-    resp = requests.post(
-        "https://tmpfiles.org/api/v1/upload",
-        files={"file": (filename, video_bytes, "video/mp4")}
+    headers = {
+        "Authorization": f"Bearer {GH_PAT}",
+        "Accept": "application/vnd.github.v3+json",
+    }
+    
+    # Nome del tag per la release
+    tag_name = "video-uploads"
+    
+    # Verifica se la release esiste già
+    release_url = f"https://api.github.com/repos/{GH_REPO}/releases/tags/{tag_name}"
+    resp = requests.get(release_url, headers=headers)
+    
+    if resp.status_code == 404:
+        print("   Creazione nuova release...")
+        create_resp = requests.post(
+            f"https://api.github.com/repos/{GH_REPO}/releases",
+            headers=headers,
+            json={
+                "tag_name": tag_name,
+                "name": "Video Uploads",
+                "draft": False,
+                "prerelease": False
+            }
+        )
+        release_data = create_resp.json()
+        release_id = release_data["id"]
+        upload_url = release_data["upload_url"].split("{")[0]
+        print(f"   Release creata (ID: {release_id})")
+    elif resp.status_code == 200:
+        release_data = resp.json()
+        release_id = release_data["id"]
+        upload_url = release_data["upload_url"].split("{")[0]
+        print(f"   Release esistente (ID: {release_id})")
+    else:
+        raise Exception(f"Errore release GitHub: {resp.text}")
+    
+    # Carica l'asset (il video)
+    print(f"   Caricamento asset: {filename}...")
+    upload_resp = requests.post(
+        upload_url + f"?name={filename}",
+        headers={
+            "Authorization": f"Bearer {GH_PAT}",
+            "Content-Type": "video/mp4"
+        },
+        data=video_bytes
     )
     
-    if resp.status_code != 200:
-        raise Exception(f"tmpfiles.org errore: {resp.text}")
+    if upload_resp.status_code not in (201, 200):
+        raise Exception(f"Errore upload asset: {upload_resp.text}")
     
-    # L'URL diretto per il download è quello con /dl/
-    file_url = resp.json()["data"]["url"]
-    direct_url = file_url.replace("/api/v1/", "/dl/")
-    print(f"   ✅ URL pubblico ottenuto: {direct_url[:80]}...")
-    return direct_url
+    asset_url = upload_resp.json()["browser_download_url"]
+    print(f"   ✅ URL GitHub Release: {asset_url[:80]}...")
+    return asset_url
 
 # ─────────────────────────────────────────────────────────────
 # YOUTUBE
@@ -270,7 +310,7 @@ def upload_to_instagram(video_url: str, caption: str, token: str) -> bool:
     print(f"   Container ID: {container_id}")
 
     print("   Attendo elaborazione", end="", flush=True)
-    for _ in range(45):
+    for _ in range(60):  # Aumentato a 60 tentativi (15 minuti)
         time.sleep(15)
         print(".", end="", flush=True)
         status_resp = requests.get(
@@ -286,7 +326,7 @@ def upload_to_instagram(video_url: str, caption: str, token: str) -> bool:
             print(f"\n   ❌ Errore elaborazione: {status_data}")
             return False
     else:
-        print(f"\n   ❌ Timeout dopo 11 minuti")
+        print(f"\n   ❌ Timeout dopo 15 minuti")
         return False
 
     pub_resp = requests.post(
@@ -367,8 +407,8 @@ def main():
     # Scarica il video da Drive
     video_data = download_video_from_drive(drive_service, target_file["id"])
 
-    # Carica su tmpfiles.org per ottenere URL pubblico
-    video_url = upload_to_tmpfiles(video_data, target_file["name"])
+    # Carica su GitHub Releases per ottenere URL pubblico persistente
+    video_url = upload_to_github_release(video_data, target_file["name"])
 
     # Upload su Instagram usando l'URL
     ig_ok = upload_to_instagram(video_url, caption, token)
