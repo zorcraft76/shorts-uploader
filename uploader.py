@@ -174,6 +174,27 @@ def revoke_public_access(service, file_id: str):
     except Exception as e:
         print(f"   ⚠️ Errore rimozione permesso: {e}")
 
+# ─────────────────────────────────────────────────────────────
+# DOWNLOAD VIDEO DA DRIVE
+# ─────────────────────────────────────────────────────────────
+
+def download_video_from_drive(service, file_id: str) -> bytes:
+    """Scarica il video da Google Drive e restituisce i bytes."""
+    print("   📥 Download video da Drive...")
+    
+    request = service.files().get_media(fileId=file_id)
+    file_data = io.BytesIO()
+    downloader = MediaIoBaseDownload(file_data, request)
+    
+    done = False
+    while not done:
+        status, done = downloader.next_chunk()
+        print(f"   Download: {int(status.progress() * 100)}%", end="\r")
+    
+    print(f"\n   ✅ Download completato ({file_data.tell() / 1024 / 1024:.1f} MB)")
+    file_data.seek(0)
+    return file_data.read()
+
 def extract_number_from_filename(filename: str) -> int | None:
     stem = Path(filename).stem
     parts = stem.split()
@@ -219,24 +240,32 @@ def build_caption(metadata: dict, short_number: int) -> str:
     return caption[:2200]
 
 # ─────────────────────────────────────────────────────────────
-# INSTAGRAM UPLOAD
+# INSTAGRAM UPLOAD - Versione con upload diretto
 # ─────────────────────────────────────────────────────────────
 
-def upload_to_instagram(video_url: str, caption: str, token: str) -> bool:
+def upload_to_instagram_direct(video_data: bytes, caption: str, token: str) -> bool:
+    """
+    Carica video direttamente su Instagram (senza URL pubblico).
+    video_data: bytes del video da caricare
+    """
     base_url = f"https://graph.facebook.com/v19.0/{IG_USER_ID}"
 
-    print("📸 Instagram: creazione container...")
+    print("📸 Instagram: creazione container con upload diretto...")
 
+    # Step 1: Crea container con file upload
     init_resp = requests.post(
         f"{base_url}/media",
         data={
-            "media_type":    "REELS",
-            "video_url":     video_url,
-            "caption":       caption,
+            "media_type": "REELS",
+            "caption": caption,
             "share_to_feed": "true",
-            "access_token":  token,
+            "access_token": token,
+        },
+        files={
+            "video": ("video.mp4", video_data, "video/mp4")
         }
     )
+    
     init_data = init_resp.json()
     print(f"   Container response: {init_data}")
 
@@ -247,8 +276,9 @@ def upload_to_instagram(video_url: str, caption: str, token: str) -> bool:
     container_id = init_data.get("id")
     print(f"   Container ID: {container_id}")
 
+    # Step 2: Polling per elaborazione
     print("   Attendo elaborazione", end="", flush=True)
-    for _ in range(30):
+    for _ in range(45):
         time.sleep(15)
         print(".", end="", flush=True)
         status_resp = requests.get(
@@ -257,16 +287,19 @@ def upload_to_instagram(video_url: str, caption: str, token: str) -> bool:
         )
         status_data = status_resp.json()
         status = status_data.get("status_code", "")
+        
         if status == "FINISHED":
             print(f" ✓")
             break
         if status == "ERROR":
-            print(f"\n   ❌ Errore: {status_data}")
+            print(f"\n   ❌ Errore elaborazione: {status_data}")
             return False
     else:
-        print(f"\n   ❌ Timeout")
+        print(f"\n   ❌ Timeout dopo 11 minuti")
         return False
 
+    # Step 3: Pubblica
+    print("   Pubblicazione...")
     pub_resp = requests.post(
         f"{base_url}/media_publish",
         data={"creation_id": container_id, "access_token": token}
@@ -275,7 +308,7 @@ def upload_to_instagram(video_url: str, caption: str, token: str) -> bool:
     print(f"   Publish response: {pub_data}")
 
     if "error" in pub_data:
-        print(f"   ❌ Errore: {pub_data['error']['message']}")
+        print(f"   ❌ Errore pubblicazione: {pub_data['error']['message']}")
         return False
 
     print(f"   ✅ Pubblicato! ID: {pub_data.get('id')}")
@@ -342,13 +375,11 @@ def main():
     caption  = build_caption(metadata, next_number)
     print(f"\n📝 Caption: {caption[:100]}...\n")
 
-    print("🔓 Rendo il file pubblico...")
-    video_url = make_file_public(drive_service, target_file["id"])
+        # Scarica il video da Drive
+    video_data = download_video_from_drive(drive_service, target_file["id"])
 
-    ig_ok = upload_to_instagram(video_url, caption, token)
-
-    print("🔒 Rimuovo accesso pubblico...")
-    revoke_public_access(drive_service, target_file["id"])
+    # Carica direttamente su Instagram (senza URL pubblico)
+    ig_ok = upload_to_instagram_direct(video_data, caption, token)
 
     if ig_ok:
         state["last_uploaded_number"] = next_number
